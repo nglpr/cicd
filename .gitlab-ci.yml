@@ -1,0 +1,121 @@
+image: docker:19.03.12
+
+before_script:
+  - export GRADLE_USER_HOME=`pwd`/.gradle
+
+services:
+  - docker:19.03.12
+  - mongo:latest
+
+variables:
+  DOCKER_DRIVER: overlay
+  #  _JAVA_OPTIONS: -Duser.home=.maven
+  _JAVA_OPTIONS: -Duser.home=`pwd`/.gradle
+  SPRING_PROFILES_ACTIVE: bpsdev,docker,localstorage
+
+cache:
+  paths:
+    - .gradle/wrapper
+    - .gradle/caches
+
+stages:
+  - build
+  - sast
+  - dast
+  - package
+
+gradle-build:
+  image: gradle:jdk11
+  stage: build
+  tags:
+    - development
+    - fasih-assignment-approval
+  only:
+    - development
+  script:
+    -  chmod +x gradlew
+    - ./gradlew build
+    - ls build/libs/
+  artifacts:
+    paths:
+      - build/libs/*.jar
+
+
+docker-build:
+  stage: package
+  tags:
+    - development
+    - fasih-assignment-approval
+  only:
+    - development
+  script:
+    - docker login devops-registry.bps.go.id -u $USER_NAME -p $PERSONAL_ACCESS_TOKEN
+    - docker build -t devops-registry.bps.go.id/ics/assignment-approval .
+    - docker push devops-registry.bps.go.id/ics/assignment-approval
+    - docker logout
+
+docker-build-ujicoba:
+  stage: package
+  tags:
+    - ujicoba
+    - fasih-assignment-approval
+  only:
+    - ujicoba
+  script:
+    - docker login devops-registry.bps.go.id -u $USER_NAME -p $PERSONAL_ACCESS_TOKEN
+    - docker pull devops-registry.bps.go.id/ics/assignment-approval:latest
+    - docker tag devops-registry.bps.go.id/ics/assignment-approval:latest devops-registry.bps.go.id/ics/assignment-approval:staging
+    - docker push devops-registry.bps.go.id/ics/assignment-approval
+    - docker tag devops-registry.bps.go.id/ics/assignment-approval:latest devops-registry.bps.go.id/ics/assignment-approval:staging-SNAPSHOT-$(date +%d-%m-%Y)
+    - docker push devops-registry.bps.go.id/ics/assignment-approval
+    - docker logout devops-registry.bps.go.id
+
+
+docker-build-master:
+  stage: package
+  tags:
+    - production
+    - fasih-assignment-approval
+  only:
+    - master
+  script:
+    - docker login devops-registry.bps.go.id -u $USER_NAME -p $PERSONAL_ACCESS_TOKEN
+    - docker login -u $REGISTRY_USER -p $REGISTRY_TOKEN ${REGISTRY_HOST}
+    - docker pull devops-registry.bps.go.id/ics/assignment-approval:staging
+    - docker tag devops-registry.bps.go.id/ics/assignment-approval:staging ${REGISTRY_HOST}/ics/assignment-approval:release
+    - docker push ${REGISTRY_HOST}/ics/assignment-approval
+    - docker logout ${REGISTRY_HOST}
+    - docker logout devops-registry.bps.go.id
+
+
+sonarqube-check:
+  stage: sast
+  tags:
+    - ujicoba
+    - fasih-assignment-approval
+  only:
+    - ujicoba
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [ "" ]
+  script:
+  - sonar-scanner -Dsonar.projectKey=assignment-approval -Dsonar.host.url=$SONAR_HOST -Dsonar.login=$SONAR_KEY
+  allow_failure: true
+
+dast:
+  stage: dast
+  only:
+    - ujicoba
+  tags:
+    - ujicoba
+    - fasih-assignment-approval
+  image: owasp/zap2docker-stable
+  variables:
+    website: "http://assignment-approval-ics-sta.apps.okd.bps.go.id"
+  script:
+    - mkdir /zap/wrk/
+    - /zap/zap-baseline.py -r pentest-assignment-approval.html -t $website || true
+    - cp /zap/wrk/pentest-assignment-approval.html .
+  artifacts:
+    paths: [pentest-assignment-approval.html]
+  allow_failure: true
